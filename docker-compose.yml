@@ -1,0 +1,152 @@
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: merchant_pay_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: merchant_pay
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_USER: merchant_user
+      MYSQL_PASSWORD: merchant_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - merchant_pay_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot_password"]
+      timeout: 20s
+      retries: 10
+      interval: 10s
+
+  # Laravel Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: merchant_pay_backend
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./backend:/var/www/html
+      - ./backend/vendor:/var/www/html/vendor
+    networks:
+      - merchant_pay_network
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=merchant_pay
+      - DB_USERNAME=merchant_user
+      - DB_PASSWORD=merchant_password
+      - APP_ENV=local
+      - APP_DEBUG=true
+      - APP_KEY=
+      - APP_URL=http://localhost
+    command: php-fpm
+
+  # Backend Setup (runs migrations and setup tasks)
+  backend-setup:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: merchant_pay_backend_setup
+    working_dir: /var/www/html
+    user: root
+    volumes:
+      - ./backend:/var/www/html
+    networks:
+      - merchant_pay_network
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=merchant_pay
+      - DB_USERNAME=merchant_user
+      - DB_PASSWORD=merchant_password
+      - APP_ENV=local
+      - APP_DEBUG=true
+      - APP_KEY=
+      - APP_URL=http://localhost
+    command: >
+      sh -c "
+      if [ ! -f .env ]; then cp .env.example .env; fi &&
+      chown -R www-data:www-data /var/www/html &&
+      chmod -R 775 /var/www/html/storage &&
+      chmod -R 775 /var/www/html/bootstrap/cache &&
+      composer install --no-interaction --prefer-dist --optimize-autoloader &&
+      php artisan key:generate --force &&
+      php artisan config:clear &&
+      php artisan cache:clear &&
+      php artisan migrate --force &&
+      php artisan db:seed --force &&
+      echo 'Backend setup completed!'
+      "
+    restart: "no"
+
+  # Vue.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: merchant_pay_frontend
+    restart: unless-stopped
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    networks:
+      - merchant_pay_network
+    environment:
+      - VITE_API_URL=http://localhost/api
+
+  # Nginx Web Server
+  nginx:
+    image: nginx:alpine
+    container_name: merchant_pay_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./backend/public:/var/www/backend/public:ro
+    networks:
+      - merchant_pay_network
+    depends_on:
+      - backend
+      - frontend
+
+  # phpMyAdmin
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: merchant_pay_phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      - PMA_HOST=mysql
+      - PMA_PORT=3306
+      - PMA_USER=root
+      - PMA_PASSWORD=root_password
+      - MYSQL_ROOT_PASSWORD=root_password
+    networks:
+      - merchant_pay_network
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+    driver: local
+
+networks:
+  merchant_pay_network:
+    driver: bridge
